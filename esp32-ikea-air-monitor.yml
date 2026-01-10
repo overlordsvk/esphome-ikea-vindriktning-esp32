@@ -1,0 +1,453 @@
+substitutions:
+  device_name: ikea-air
+
+### ESPHome config section
+
+esphome:
+  name: ikea-air
+  friendly_name: Ikea Air
+  on_boot:
+    priority: 600
+    then:
+      - uart.write:
+          # Initialise the PM1006 sensor on startup (need to cycle power to sensor as well, not just rest ESP)
+          data: [0x11, 0x02, 0x0B, 0x01, 0xE1]
+      - light.turn_on:
+          id: status
+          brightness: 10%
+          red: 100%
+          green: 100%
+          blue: 100%
+          effect: "Pulse"
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "YOUR-SECRET-KEY"
+
+ota:
+  - platform: esphome
+    password: "YOUR-SECRET-KEY"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Ikea-Air Fallback Hotspot"
+    password: "YOUR-SECRET-KEY"
+
+captive_portal:
+
+### Air monitor config section
+
+# Board
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Configurables
+number:
+  - platform: template
+    name: "Max LED Brightness"
+    id: max_led_brightness
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    initial_value: 80
+    step: 1
+    icon: "mdi:brightness-percent"
+  - platform: template
+    name: "Min LED Brightness"
+    id: min_led_brightness
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    initial_value: 50
+    step: 1
+    icon: "mdi:brightness-percent"
+
+  - platform: template
+    name: "Lux calibration"
+    id: lux_calibration
+    optimistic: true
+    min_value: 0
+    max_value: 5000
+    initial_value: 0
+    step: 1
+    icon: "mdi:brightness-6"
+
+# Fan
+switch:
+  - platform: gpio
+    pin: 12
+    id: fan
+    restore_mode: ALWAYS_ON
+    disabled_by_default: true
+    entity_category: diagnostic
+
+# 3x LED WS2812
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2812
+    pin: GPIO25
+    num_leds: 3
+    id: status
+    restore_mode: ALWAYS_ON
+    effects:
+      - pulse:
+          name: "pulse"
+          transition_length: 500ms
+          update_interval: 500ms
+          min_brightness: 30%
+          max_brightness: 70%
+
+# SDC41
+i2c:
+  sda: 21
+  scl: 22
+  scan: true
+  id: bus_a
+
+# HW Button
+button:
+  - platform: restart
+    name: "Restart ${device_name}"
+    disabled_by_default: true
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Buzzer Beep"
+    icon: "mdi:volume-high"
+    on_press:
+      - rtttl.play: "siren:d=8,o=5,b=100:d,e,d,e,d,e,d,e"
+      - delay: 500ms
+      - rtttl.stop
+
+# PM1006
+uart:
+  rx_pin: 16
+  tx_pin: 17
+  baud_rate: 9600
+
+# Buzzer FUET-5020
+output:
+  - platform: ledc
+    pin: GPIO15
+    id: buzzer
+
+rtttl:
+  output: buzzer
+  id: buzzer_rtttl
+  gain: 100%
+
+sensor:
+  - platform: resistance
+    sensor: ambient_light
+    configuration: DOWNSTREAM
+    resistor: 47kOhm
+    name: "Ambient Resistance"
+
+  - platform: adc
+    pin: GPIO33
+    name: "Ambient Light" # PT26-51B/TR8
+    id: ambient_light
+    attenuation: 12db
+    update_interval: 10s
+    accuracy_decimals: 0
+    unit_of_measurement: lx
+    # NOTE: Ambient light readings can be noisy on this hardware.
+    # Use the `Lux calibration` template number from Home Assistant to
+    # apply a manual offset (set `lux_calibration`), or consider using
+    # Home Assistant's `sun` entity for day/night brightness control.
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+      # Invert active-low phototransistor
+      - lambda: |-
+          return 5.0 - x;
+      - lambda: |-
+          return x * 1000.0;
+      - lambda: |-
+          return x - id(lux_calibration).state;
+    on_value:
+      then:
+        - script.execute: update_air_quality_lights
+
+  - platform: pm1006
+    pm_2_5:
+      name: "PM 2.5"
+      id: pm
+      accuracy_decimals: 1
+    update_interval: 60s
+
+  - platform: scd4x
+    update_interval: 60s
+    temperature:
+      name: "Temperature"
+    humidity:
+      name: "Humidity"
+      id: humidity
+    co2:
+      name: "CO2"
+      id: co2
+      on_value:
+        then:
+          - script.execute: update_air_quality_lights
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    entity_category: diagnostic
+    disabled_by_default: true
+    update_interval: 60s
+
+  - platform: template
+    id: led_target_brightness
+    name: "Internal LED Brightness"
+    internal: true
+    update_interval: 10s
+    lambda: |-
+      // Constants
+      constexpr float OFF_THRESHOLD = 0.01f;
+      const float MAX_LUX = 200.0;         // pseudo-lux upper bound for % calculation
+
+      // Light off on max brightness set to 0
+      if (id(max_led_brightness).state <= OFF_THRESHOLD) {
+        return 0.0f;
+      }
+
+      // Inputs
+      float MIN_BRIGHTNESS = id(min_led_brightness).state / 100;   // 50% hard minimum
+      float lux = id(ambient_light).has_state() ? id(ambient_light).state : 0.0;
+      float max_brightness = fmaxf(id(max_led_brightness).state / 100.0, MIN_BRIGHTNESS);
+
+      // Clamp inputs
+      lux = fminf(fmaxf(lux, 0.0), MAX_LUX);
+      max_brightness = fminf(fmaxf(max_brightness, MIN_BRIGHTNESS), 1.0);
+
+      // Direct linear scaling (bright room = bright LEDs)
+      float brightness = MIN_BRIGHTNESS + powf(lux / MAX_LUX, 1.3) * (max_brightness - MIN_BRIGHTNESS);
+
+      // Final safety clamp
+      return fminf(fmaxf(brightness, MIN_BRIGHTNESS), max_brightness);
+
+script:
+  - id: update_air_quality_lights
+    mode: restart
+    then:
+      # 1. Clear effects first
+      - light.turn_on:
+          id: status
+          effect: "None"
+
+      # ========================================================
+      # GREEN ZONE (< 1000)
+      # ========================================================
+      - if:
+          condition:
+            lambda: "return id(co2).state < 1000;"
+          then:
+            # 🟢🟢🟢 Base: All Green
+            - light.turn_on:
+                id: status
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 0%
+                green: 100%
+                blue: 0%
+
+      # ========================================================
+      # TRANSITION: GREEN -> ORANGE
+      # ========================================================
+      - if: # 1000 - 1499: (🟠🟢🟢)
+          condition:
+            lambda: "return id(co2).state >= 1000 && id(co2).state < 1500;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 0%
+                green: 0%
+                blue: 0%
+            # 1x Orange
+            - light.addressable_set:
+                id: status
+                range_from: 2
+                range_to: 2
+                red: 100%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+            # 2x Green
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 1
+                red: 0%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+
+      - if: # 1500 - 1999: Orange, Top Green (🟠🟠🟢)
+          condition:
+            lambda: "return id(co2).state >= 1500 && id(co2).state < 2000;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 0%
+                green: 0%
+                blue: 0%
+            # 2x Orange
+            - light.addressable_set:
+                id: status
+                range_from: 1
+                range_to: 2
+                red: 100%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+            # 1x Green
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 0
+                red: 0%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+
+      # ========================================================
+      # ORANGE ZONE (2000 - 2499)
+      # ========================================================
+      - if: # 🟠🟠🟠
+          condition:
+            lambda: "return id(co2).state >= 2000 && id(co2).state < 2500;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 100%
+                green: 100%
+                blue: 0%
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 2
+                red: 100%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+      # ========================================================
+      # TRANSITION: ORANGE -> RED
+      # ========================================================
+      - if: # 2500 - 2999: Bottom Red, Top two Orange (🟠🟠🔴)
+          condition:
+            lambda: "return id(co2).state >= 2500 && id(co2).state < 3000;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 0%
+                green: 0%
+                blue: 0%
+            # 1x Red
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 0
+                red: 100%
+                green: 0%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+            # 2x Orange
+            - light.addressable_set:
+                id: status
+                range_from: 1
+                range_to: 2
+                red: 100%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+
+      - if: # 3000 - 3499: Bottom two Red, Top Orange (🟠🔴🔴)
+          condition:
+            lambda: "return id(co2).state >= 3000 && id(co2).state < 3500;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 0%
+                green: 0%
+                blue: 0%
+            # 2x Red
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 1
+                red: 100%
+                green: 0%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+            # 1x Orange
+            - light.addressable_set:
+                id: status
+                range_from: 2
+                range_to: 2
+                red: 100%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+
+      # ========================================================
+      # DANGER ZONE (3500+)
+      # ========================================================
+      - if: # 3500 - 3999: All Red (🔴🔴🔴)
+          condition:
+            lambda: "return id(co2).state >= 3500 && id(co2).state < 4000;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 100%
+                green: 0%
+                blue: 0%
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 2
+                red: 100%
+                green: 0%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
+
+      - if: # 4500+: All Red + Pulse Effect (🔴🔴🔴 ⚠️)
+          condition:
+            lambda: "return id(co2).state >= 4500;"
+          then:
+            - light.turn_on:
+                id: status
+                transition_length: 0s
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 100%
+                green: 0%
+                blue: 0%
+            - light.turn_on:
+                id: status
+                brightness: !lambda "return id(led_target_brightness).state;"
+                red: 100%
+                green: 0%
+                blue: 0%
+                effect: "pulse"

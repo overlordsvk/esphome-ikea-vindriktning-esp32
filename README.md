@@ -26,28 +26,33 @@ alerts, and advanced automation hooks.
 
 ## 🧰 Hardware
 
-| Component | Notes |
-|---------|------|
-| Board | LaskaKit ESP-VINDRIKTNING ESP32 I2C |
-| MCU | ESP32 |
-| PM Sensor | PM1006 |
-| Temp / Humidity / CO₂ | Sensirion SCD4x |
-| LEDs | 3× WS2812 RGB |
-| Buzzer | Passive piezo (GPIO15, PWM) |
+| Component             | Notes                               |
+| --------------------- | ----------------------------------- |
+| Board                 | LaskaKit ESP-VINDRIKTNING ESP32 I2C |
+| MCU                   | ESP32                               |
+| PM Sensor             | PM1006                              |
+| Temp / Humidity / CO₂ | Sensirion SCD4x                     |
+| LEDs                  | 3× WS2812 RGB                       |
+| Buzzer                | Passive piezo (GPIO15, PWM)         |
 
 ---
 
 ## 🌈 LED Status Logic
 
-Each LED represents a different metric:
+All 3 LEDs represent the current CO₂ level. The LEDs change color
+progressively to indicate air quality at a glance.
 
-| LED | Metric |
-|----|------|
-| LED 0 | PM2.5 |
-| LED 1 | CO₂ |
-| LED 2 | Humidity |
+| CO₂ Range (ppm) |       LED 0       |      LED 1       |       LED 2       | Notes                           |
+| --------------: | :---------------: | :--------------: | :---------------: | :------------------------------ |
+|          < 1000 |        🟢         |        🟢        |        🟢         | Good air — all green            |
+|     1000 – 1499 |        🟢         |        🟢        |        🟠         | Beginning of elevated CO₂       |
+|     1500 – 1999 |        🟢         |        🟠        |        🟠         | Moderate — two orange           |
+|     2000 – 2499 |        🟠         |        🟠        |        🟠         | High — all orange               |
+|     2500 – 2999 |        🔴         |        🟠        |        🟠         | Very high — one red, two orange |
+|     3000 – 3499 |        🔴         |        🔴        |        🟠         | Dangerous — two red, one orange |
+|     3500 – 3999 |        🔴         |        🔴        |        🔴         | Severe — all red                |
+|          ≥ 4500 | 🔴 (pulsing high) | 🔴 (pulsing low) | 🔴 (pulsing high) | Critical — pulsing alert        |
 
-Colors are dynamically updated based on measured values.
 Brightness is automatically reduced at night and capped by a
 user-defined maximum value.
 
@@ -60,7 +65,8 @@ user-defined maximum value.
 - Supports different tones and alert patterns
 - Intended for alerts (CO₂, PM2.5, etc.)
 
-> Note: True volume control is not possible due to hardware limitations.
+- **Buzzer**: The `Buzzer` is currently not working.
+  > Note: True volume control is not possible due to hardware limitations.
 
 ---
 
@@ -109,6 +115,15 @@ This avoids known ESPHome linker issues with `number.template`.
 
 - Sensirion SCD4x  
   https://sensirion.com/products/catalog/SCD40/
+
+---
+
+---
+
+## ⚠ Known Issues
+
+- **Buzzer**: The `Buzzer` is currently not working.
+- **Ambient light (lux)**: Lux readings are noisy; use the `Lux calibration` input in Home Assistant to apply a manual offset, or consider switching to Home Assistant's `sun` entity for day/night brightness adjustments instead of relying solely on local lux.
 
 ---
 
