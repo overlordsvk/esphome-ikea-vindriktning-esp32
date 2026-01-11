@@ -261,6 +261,14 @@ script:
                 red: 0%
                 green: 100%
                 blue: 0%
+            - light.addressable_set:
+                id: status
+                range_from: 0
+                range_to: 2
+                red: 0%
+                green: 100%
+                blue: 0%
+                color_brightness: !lambda "return id(led_target_brightness).state;"
 
       # ========================================================
       # TRANSITION: GREEN -> ORANGE
