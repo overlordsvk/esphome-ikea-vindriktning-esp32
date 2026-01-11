@@ -148,12 +148,6 @@ rtttl:
   gain: 100%
 
 sensor:
-  - platform: resistance
-    sensor: ambient_light
-    configuration: DOWNSTREAM
-    resistor: 47kOhm
-    name: "Ambient Resistance"
-
   - platform: adc
     pin: GPIO33
     name: "Ambient Light" # PT26-51B/TR8
