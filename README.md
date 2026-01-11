@@ -95,10 +95,9 @@ This avoids known ESPHome linker issues with `number.template`.
 
 ## 🚀 Getting Started
 
-1. Flash ESPHome onto the ESP32
-2. Adjust pin assignments if needed
-3. Create required `input_number` in Home Assistant
-4. Enjoy a smarter VINDRIKTNING
+1. Adjust pin assignments if needed
+2. Flash ESPHome onto the ESP32
+3. Enjoy a smarter VINDRIKTNING
 
 ---
 
